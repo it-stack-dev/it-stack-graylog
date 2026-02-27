@@ -1,0 +1,58 @@
+# it-stack-graylog.yml — IT-Stack Module Manifest
+# Module 20: Graylog centralized log management
+
+module:
+  name: graylog
+  number: "20"
+  repo: it-stack-dev/it-stack-graylog
+  version: "0.1.0"
+  phase: 4
+  category: infrastructure
+  server: lab-proxy1
+  description: "Graylog centralized log management"
+
+upstream:
+  name: Graylog
+  image: graylog/graylog:5.2
+  license: SSPL-1.0
+
+ports:
+  - 9000 (Web UI)
+   - 1514 (Syslog)
+   - 12201 (GELF)
+
+labs:
+  - id: "20-01"
+    name: Standalone
+    docker_compose: docker/docker-compose.standalone.yml
+    test_script: tests/labs/test-lab-20-01.sh
+  - id: "20-02"
+    name: External Dependencies
+    docker_compose: docker/docker-compose.lan.yml
+    test_script: tests/labs/test-lab-20-02.sh
+  - id: "20-03"
+    name: Advanced Features
+    docker_compose: docker/docker-compose.advanced.yml
+    test_script: tests/labs/test-lab-20-03.sh
+  - id: "20-04"
+    name: SSO Integration
+    docker_compose: docker/docker-compose.sso.yml
+    test_script: tests/labs/test-lab-20-04.sh
+  - id: "20-05"
+    name: Advanced Integration
+    docker_compose: docker/docker-compose.integration.yml
+    test_script: tests/labs/test-lab-20-05.sh
+  - id: "20-06"
+    name: Production Deployment
+    docker_compose: docker/docker-compose.production.yml
+    test_script: tests/labs/test-lab-20-06.sh
+
+resources:
+  cpu_cores: 2
+  ram_gb: 8
+  disk_gb: 20
+
+health_check:
+  endpoint: /health
+  metrics_endpoint: /metrics
+  log_path: /var/log/graylog/

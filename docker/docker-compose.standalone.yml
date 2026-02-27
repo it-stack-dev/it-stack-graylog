@@ -1,0 +1,29 @@
+# Lab 01 — Standalone: Complete Graylog centralized log management in isolation
+# No external dependencies required.
+---
+services:
+  graylog:
+    image: graylog/graylog:5.2
+    container_name: it-stack-graylog
+    restart: unless-stopped
+    ports:
+      - "9000:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-01-standalone
+    volumes:
+      - graylog_data:/var/lib/graylog
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  graylog_data:
