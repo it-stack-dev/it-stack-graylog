@@ -1,26 +1,210 @@
-# Lab 05 — Advanced Integration: graylog with full IT-Stack ecosystem
----
-services:
-  graylog:
-    image: graylog/graylog:5.2
-    container_name: it-stack-graylog
-    restart: unless-stopped
-    ports:
-      - "9000:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-05-integration
-      - KEYCLOAK_URL=
-      - DB_HOST=
-      - REDIS_HOST=
-      - SMTP_HOST=
-      - GRAYLOG_HOST=
-    extra_hosts:
-      - "lab-id1:10.0.50.11"
-      - "lab-db1:10.0.50.12"
-      - "lab-proxy1:10.0.50.15"
-    networks:
-      - it-stack-net
+# =============================================================================
+# IT-Stack: Graylog — Lab 05: Advanced Integration
+# Module 20 · Phase 4 · Lab 05
+# =============================================================================
+# Services: MongoDB · Elasticsearch 7 · OpenLDAP · Keycloak · WireMock (Zabbix-mock) · Graylog
+# Ports:    Web:9040  WireMock:8765  KC:8544  LDAP:3889  Syslog:1518/UDP  GELF:12205/UDP
+# Credentials:
+#   Graylog:  admin / GraylogLab05!  (sha256: 1e6b2cc...)
+#   Keycloak: admin / Admin05!
+#   LDAP:     cn=admin,dc=lab,dc=local / LdapLab05!
+# What's new vs Lab 04:
+#   + WireMock 3.x simulates Zabbix HTTP API (log-based alert triggers)
+#   + Graylog configured with ZABBIX_URL for alert forwarding
+#   + Integration tested: Graylog → Zabbix HTTP API (alert create)
+# =============================================================================
 
+name: it-stack-graylog-lab05
+
+services:
+
+  # ── MongoDB ─────────────────────────────────────────────────────────────────
+  graylog-i05-mongo:
+    image: mongo:6.0
+    container_name: graylog-i05-mongo
+    restart: unless-stopped
+    volumes:
+      - graylog-i05-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── Elasticsearch 7 (Graylog requires ES 7.x) ─────────────────────────────────
+  graylog-i05-es:
+    image: elasticsearch:7.17.12
+    container_name: graylog-i05-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+    volumes:
+      - graylog-i05-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q '\"status\"' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  graylog-i05-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: graylog-i05-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapLab05!
+      LDAP_CONFIG_PASSWORD: ConfigLab05!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly05!
+    ports:
+      - "3889:389"
+    volumes:
+      - graylog-i05-ldap-data:/var/lib/ldap
+      - graylog-i05-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapLab05! cn=admin > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  graylog-i05-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: graylog-i05-kc
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin05!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8544:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+  # ── WireMock — Zabbix HTTP API mock ─────────────────────────────────────────
+  graylog-i05-mock:
+    image: wiremock/wiremock:3.3.1
+    container_name: graylog-i05-mock
+    restart: unless-stopped
+    command: >
+      --port=8080
+      --verbose
+      --global-response-templating
+    ports:
+      - "8765:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/__admin/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Graylog ─────────────────────────────────────────────────────────────────
+  graylog-i05-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-i05-app
+    restart: unless-stopped
+    depends_on:
+      graylog-i05-mongo:
+        condition: service_healthy
+      graylog-i05-es:
+        condition: service_healthy
+      graylog-i05-ldap:
+        condition: service_healthy
+      graylog-i05-mock:
+        condition: service_healthy
+    ports:
+      - "9040:9000"
+      - "1518:1514/udp"
+      - "12205:12201/udp"
+    environment:
+      GRAYLOG_IS_MASTER: "true"
+      GRAYLOG_PASSWORD_SECRET: GraylogLab05SecretKey1234567890!
+      GRAYLOG_ROOT_PASSWORD_SHA2: "a5be15fcb6f940e2c7c52f4cf4d35a31d73440d4b1b9c4a3c85a3e7e74f00ae5"
+      GRAYLOG_HTTP_EXTERNAL_URI: http://localhost:9040/
+      GRAYLOG_MONGODB_URI: mongodb://graylog-i05-mongo:27017/graylog
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://graylog-i05-es:9200
+      GRAYLOG_LDAP_CONNECTION_URI: ldap://graylog-i05-ldap:389
+      GRAYLOG_LDAP_BASE_DN: dc=lab,dc=local
+      GRAYLOG_LDAP_SEARCH_BASE: dc=lab,dc=local
+      GRAYLOG_LDAP_SEARCH_PATTERN: "(&(objectClass=inetOrgPerson)(uid={0}))"
+      KEYCLOAK_URL: http://graylog-i05-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: graylog
+      # Zabbix integration (via WireMock)
+      ZABBIX_URL: http://graylog-i05-mock:8080
+      ZABBIX_API_TOKEN: lab-zbx-token-05
+      ZABBIX_HOST_GROUP: IT-Stack-Lab
+    volumes:
+      - graylog-i05-app-data:/usr/share/graylog/data
+    networks:
+      - graylog-i05-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
-  it-stack-net:
+  graylog-i05-net:
+    name: graylog-i05-net
     driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  graylog-i05-mongo-data:
+  graylog-i05-es-data:
+  graylog-i05-ldap-data:
+  graylog-i05-ldap-config:
+  graylog-i05-app-data:
