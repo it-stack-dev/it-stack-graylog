@@ -1,4 +1,123 @@
-# Lab 03 — Advanced Features: graylog with TLS, resource limits, logging
+# Lab 03 — Advanced Features: Graylog with resource limits + tuned heap sizes
+# Resource limits on all 3 tiers (MongoDB, Elasticsearch, Graylog)
+# Graylog Web: http://localhost:9020
+# Syslog UDP:  localhost:1516
+# GELF UDP:    localhost:12203
+---
+name: it-stack-graylog-lab03
+
+services:
+
+  # ── MongoDB (resource-limited) ───────────────────────────────────────────
+  graylog-a03-mongo:
+    image: mongo:6.0
+    container_name: graylog-a03-mongo
+    restart: unless-stopped
+    volumes:
+      - graylog-a03-mongo-data:/data/db
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - graylog-a03-net
+
+  # ── Elasticsearch (resource-limited + heap) ──────────────────────────
+  graylog-a03-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.12
+    container_name: graylog-a03-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=graylog-lab03
+      - bootstrap.memory_lock=true
+      - indices.lifecycle.poll_interval=10s
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - graylog-a03-es-data:/usr/share/elasticsearch/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q 'green\\|yellow' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 90s
+    networks:
+      - graylog-a03-net
+
+  # ── Graylog (resource-limited + tuned) ──────────────────────────────
+  graylog-a03-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-a03-app
+    restart: unless-stopped
+    depends_on:
+      graylog-a03-mongo: {condition: service_healthy}
+      graylog-a03-es: {condition: service_healthy}
+    environment:
+      GRAYLOG_PASSWORD_SECRET: "labsecretkey1234labsecretkey1234"
+      GRAYLOG_ROOT_PASSWORD_SHA2: "5e6d6e9c2d9d72e9f5a20b97e0a47f9de8df4c3f1e2b3c4d5e6f7a8b9c0d1e2f"
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://localhost:9020/"
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://graylog-a03-es:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://graylog-a03-mongo/graylog"
+      GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
+      GRAYLOG_MESSAGE_JOURNAL_MAX_SIZE: "2gb"
+      GRAYLOG_PROCESSBUFFER_PROCESSORS: "3"
+      GRAYLOG_OUTPUTBUFFER_PROCESSORS: "3"
+      GRAYLOG_INPUTBUFFER_PROCESSORS: "2"
+      JAVA_OPTS: "-Xms512m -Xmx1g -XX:+UseG1GC"
+    ports:
+      - "9020:9000"
+      - "1516:1514/udp"
+      - "12203:12201/udp"
+    volumes:
+      - graylog-a03-data:/usr/share/graylog/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
+    logging:
+      driver: json-file
+      options: {max-size: "100m", max-file: "5"}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/ | grep -qi 'cluster_id\\|version' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    networks:
+      - graylog-a03-net
+
+networks:
+  graylog-a03-net:
+    driver: bridge
+
+volumes:
+  graylog-a03-mongo-data:
+  graylog-a03-es-data:
+  graylog-a03-data:
 ---
 services:
   graylog:
