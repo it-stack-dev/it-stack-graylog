@@ -1,34 +1,185 @@
-# Lab 04 — SSO Integration: graylog with Keycloak OIDC authentication
----
-services:
-  graylog:
-    image: graylog/graylog:5.2
-    container_name: it-stack-graylog
-    restart: unless-stopped
-    ports:
-      - "9000:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-04-sso
-      - KEYCLOAK_URL=
-      - KEYCLOAK_REALM=
-      - KEYCLOAK_CLIENT_ID=graylog
-      - KEYCLOAK_CLIENT_SECRET=
-    networks:
-      - it-stack-net
+# =============================================================================
+# IT-Stack: Graylog — Lab 04: SSO Integration
+# Module 20 · Phase 4 · Lab 04
+# =============================================================================
+# Services: MongoDB · Elasticsearch · OpenLDAP · Keycloak · Graylog
+# Ports:    Web:9030  Keycloak:8534  LDAP:3899  Syslog:1517/UDP  GELF:12204/UDP
+# Credentials:
+#   Graylog:    admin / GraylogLab04!
+#   Keycloak:   admin / Admin04!
+#   LDAP admin: cn=admin,dc=lab,dc=local / LdapLab04!
+# What's new vs Lab 03:
+#   + OpenLDAP directory for LDAP user federation
+#   + Keycloak 24 dev-mode as OIDC IdP (it-stack realm)
+#   + Graylog LDAP auth env vars (GRAYLOG_LDAP_*)
+#   + Keycloak OIDC discovery endpoint tested in Lab 04
+# =============================================================================
 
-  # Local Keycloak for SSO lab (replace with lab-id1 in real env)
-  keycloak:
-    image: quay.io/keycloak/keycloak:24
-    container_name: it-stack-graylog-keycloak
+name: it-stack-graylog-lab04
+
+services:
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  graylog-s04-mongo:
+    image: mongo:6.0
+    container_name: graylog-s04-mongo
+    restart: unless-stopped
+    volumes:
+      - graylog-s04-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - graylog-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── Elasticsearch (Graylog requires ES 7.x) ─────────────────────────────
+  graylog-s04-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.12
+    container_name: graylog-s04-es
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      xpack.security.enabled: "false"
+    volumes:
+      - graylog-s04-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks:
+      - graylog-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  graylog-s04-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: graylog-s04-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapLab04!
+      LDAP_CONFIG_PASSWORD: ConfigLab04!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly04!
+    ports:
+      - "3899:389"
+    volumes:
+      - graylog-s04-ldap-data:/var/lib/ldap
+      - graylog-s04-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapLab04! cn=admin > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - graylog-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  graylog-s04-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: graylog-s04-kc
+    restart: unless-stopped
     command: start-dev
     environment:
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin04!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
     ports:
-      - "8080:8080"
+      - "8534:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
     networks:
-      - it-stack-net
+      - graylog-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
+  # ── Graylog ────────────────────────────────────────────────────────────────
+  graylog-s04-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-s04-app
+    restart: unless-stopped
+    depends_on:
+      graylog-s04-mongo:
+        condition: service_healthy
+      graylog-s04-es:
+        condition: service_healthy
+      graylog-s04-ldap:
+        condition: service_healthy
+    ports:
+      - "9030:9000"
+      - "1517:1514/udp"
+      - "12204:12201/udp"
+    environment:
+      GRAYLOG_PASSWORD_SECRET: GraylogPasswordSecret04Lab!
+      GRAYLOG_ROOT_PASSWORD_SHA2: "9b1d86bc83a03c988d3edaf7f7f5c0ff4e1f6de580289d62ba7b7e37c7ea45dc"
+      GRAYLOG_HTTP_EXTERNAL_URI: http://localhost:9030/
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://graylog-s04-es:9200
+      GRAYLOG_MONGODB_URI: mongodb://graylog-s04-mongo/graylog
+      # LDAP configuration
+      GRAYLOG_LDAP_CONNECTION_URI: ldap://graylog-s04-ldap:389
+      GRAYLOG_LDAP_BASE_DN: dc=lab,dc=local
+      GRAYLOG_LDAP_SEARCH_BASE: dc=lab,dc=local
+      GRAYLOG_LDAP_SEARCH_PATTERN: "(uid={0})"
+      GRAYLOG_LDAP_DISPLAY_NAME_ATTRIBUTE: cn
+      GRAYLOG_LDAP_SYSTEM_USERNAME: cn=admin,dc=lab,dc=local
+      GRAYLOG_LDAP_SYSTEM_PASSWORD: LdapLab04!
+      # Keycloak OIDC reference
+      KEYCLOAK_URL: http://graylog-s04-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: graylog
+    volumes:
+      - graylog-s04-app-data:/usr/share/graylog/data
+    networks:
+      - graylog-s04-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
+# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
-  it-stack-net:
+  graylog-s04-net:
+    name: graylog-s04-net
     driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  graylog-s04-mongo-data:
+  graylog-s04-es-data:
+  graylog-s04-ldap-data:
+  graylog-s04-ldap-config:
+  graylog-s04-app-data:

@@ -184,3 +184,46 @@ run: bash tests/labs/test-lab-20-01.sh
       - name: Cleanup
         if: always()
         run: docker compose -f docker/docker-compose.advanced.yml down -v
+
+  lab-04-smoke:
+    name: Lab 04 -- Graylog SSO Integration (Keycloak OIDC + OpenLDAP)
+    runs-on: ubuntu-latest
+    needs: validate
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get install -y curl netcat-openbsd ldap-utils
+
+      - name: Validate SSO compose
+        run: docker compose -f docker/docker-compose.sso.yml config -q && echo "SSO compose valid"
+
+      - name: Start SSO stack
+        run: docker compose -f docker/docker-compose.sso.yml up -d
+
+      - name: Wait for MongoDB
+        run: timeout 60 bash -c 'until docker exec graylog-s04-mongo mongosh --eval "db.adminCommand(\"ping\")" >/dev/null 2>&1; do sleep 5; done'
+
+      - name: Wait for Elasticsearch
+        run: timeout 120 bash -c 'until docker exec graylog-s04-es curl -sf http://localhost:9200/_cluster/health | grep -q "green\|yellow"; do sleep 10; done'
+
+      - name: Wait for OpenLDAP
+        run: timeout 120 bash -c 'until docker exec graylog-s04-ldap ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapLab04! cn=admin >/dev/null 2>&1; do sleep 5; done'
+
+      - name: Wait for Keycloak
+        run: timeout 300 bash -c 'until curl -sf http://localhost:8534/realms/master; do sleep 10; done'
+
+      - name: Wait for Graylog
+        run: timeout 300 bash -c 'until curl -sf http://localhost:9030/api | grep -qi "cluster_id\|version"; do sleep 15; done'
+
+      - name: Run Lab 20-04 test script
+        run: bash tests/labs/test-lab-20-04.sh --no-cleanup
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.sso.yml logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker/docker-compose.sso.yml down -v
