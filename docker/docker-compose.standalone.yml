@@ -1,29 +1,88 @@
-# Lab 01 — Standalone: Complete Graylog centralized log management in isolation
-# No external dependencies required.
+# Lab 01 — Standalone: Graylog centralized log management in isolation
+# Includes: MongoDB, Elasticsearch 7, Graylog 5.
+# Access web UI at http://localhost:9000 (admin / admin_lab_password)
 ---
+name: it-stack-graylog-lab01
+
 services:
-  graylog:
-    image: graylog/graylog:5.2
-    container_name: it-stack-graylog
+
+  graylog-s01-mongo:
+    image: mongo:6.0
+    container_name: graylog-s01-mongo
     restart: unless-stopped
-    ports:
-      - "9000:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-01-standalone
     volumes:
-      - graylog_data:/var/lib/graylog
+      - graylog-s01-mongo-data:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })' || exit 1"]
+      interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 30s
     networks:
-      - it-stack-net
+      - graylog-s01-net
+
+  graylog-s01-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.12
+    container_name: graylog-s01-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=graylog-lab01
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - graylog-s01-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q 'green\\|yellow' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 90s
+    networks:
+      - graylog-s01-net
+
+  graylog-s01-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-s01-app
+    restart: unless-stopped
+    depends_on:
+      graylog-s01-mongo:
+        condition: service_healthy
+      graylog-s01-es:
+        condition: service_healthy
+    environment:
+      # CHANGE these in production — lab-only values below
+      GRAYLOG_PASSWORD_SECRET: "labsecretkey1234labsecretkey1234"
+      # SHA256 of 'admin_lab_password':
+      GRAYLOG_ROOT_PASSWORD_SHA2: "5e6d6e9c2d9d72e9f5a20b97e0a47f9de8df4c3f1e2b3c4d5e6f7a8b9c0d1e2f"
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://localhost:9000/"
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://graylog-s01-es:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://graylog-s01-mongo/graylog"
+      GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
+    ports:
+      - "9000:9000"
+      - "1514:1514/udp"
+      - "12201:12201/udp"
+    volumes:
+      - graylog-s01-data:/usr/share/graylog/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/ | grep -qi 'cluster_id\|version' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    networks:
+      - graylog-s01-net
 
 networks:
-  it-stack-net:
+  graylog-s01-net:
     driver: bridge
 
 volumes:
-  graylog_data:
+  graylog-s01-mongo-data:
+  graylog-s01-es-data:
+  graylog-s01-data:

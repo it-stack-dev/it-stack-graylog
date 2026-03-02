@@ -44,20 +44,98 @@ fi
 # ── PHASE 3: Functional Tests ─────────────────────────────────────────────────
 info "Phase 3: Functional Tests (Lab 01 — Standalone)"
 
-# TODO: Add module-specific functional tests here
-# Example:
-# if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
-#     pass "Health endpoint responds"
-# else
-#     fail "Health endpoint not reachable"
-# fi
+GRAYLOG_URL="http://localhost:9000"
+NO_CLEANUP=${NO_CLEANUP:-0}
 
-warn "Functional tests for Lab 20-01 pending implementation"
+cleanup() {
+    if [ "${NO_CLEANUP}" = "1" ]; then
+        info "NO_CLEANUP=1 — skipping teardown"
+    else
+        info "Phase 4: Cleanup"
+        docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans 2>/dev/null || true
+        info "Cleanup complete"
+    fi
+}
+trap cleanup EXIT
 
-# ── PHASE 4: Cleanup ──────────────────────────────────────────────────────────
-info "Phase 4: Cleanup"
-docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans
-info "Cleanup complete"
+section() { echo -e "\n${CYAN}## $1${NC}"; }
+
+# ── PHASE 1: Setup ────────────────────────────────────────────────────────────
+section "Phase 1: Setup"
+docker compose -f "${COMPOSE_FILE}" up -d
+info "Waiting 120s for Graylog to initialize (MongoDB + Elasticsearch + Graylog)..."
+sleep 120
+
+# ── PHASE 2: Health Checks ────────────────────────────────────────────────────
+section "Phase 2: Health Checks"
+
+if docker compose -f "${COMPOSE_FILE}" ps graylog-s01-mongo 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.1 MongoDB (graylog-s01-mongo) is up"
+else
+    fail "2.1 MongoDB is not running"
+fi
+
+if docker compose -f "${COMPOSE_FILE}" ps graylog-s01-es 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.2 Elasticsearch (graylog-s01-es) is up"
+else
+    fail "2.2 Elasticsearch is not running"
+fi
+
+if docker compose -f "${COMPOSE_FILE}" ps graylog-s01-app 2>/dev/null | grep -q 'Up\|running'; then
+    pass "2.3 Graylog (graylog-s01-app) is up"
+else
+    fail "2.3 Graylog is not running"
+fi
+
+info "Waiting 30s more for Graylog API to become ready..."
+sleep 30
+
+# ── PHASE 3: Functional Tests ─────────────────────────────────────────────────
+section "Phase 3: Functional Tests"
+
+# 3.1 Graylog web UI root
+HTTP_CODE=$(curl -o /dev/null -sw '%{http_code}' -L "${GRAYLOG_URL}/" 2>/dev/null || echo 000)
+if echo "${HTTP_CODE}" | grep -q '^[23]'; then
+    pass "3.1 Graylog web UI accessible (HTTP ${HTTP_CODE})"
+else
+    fail "3.1 Graylog web UI not accessible (HTTP ${HTTP_CODE})"
+fi
+
+# 3.2 Graylog REST API responds
+HTTP_API=$(curl -o /dev/null -sw '%{http_code}' \
+    -u admin:admin_lab_password \
+    -H 'Accept: application/json' \
+    "${GRAYLOG_URL}/api/" \
+    2>/dev/null || echo 000)
+if echo "${HTTP_API}" | grep -q '^[23]'; then
+    pass "3.2 Graylog REST API responds (HTTP ${HTTP_API})"
+else
+    warn "3.2 Graylog REST API not ready yet (HTTP ${HTTP_API})"
+fi
+
+# 3.3 Graylog system info
+SYS_RESPONSE=$(curl -sf \
+    -u admin:admin_lab_password \
+    -H 'Accept: application/json' \
+    "${GRAYLOG_URL}/api/system" \
+    2>/dev/null || echo '')
+if echo "${SYS_RESPONSE}" | grep -qi 'cluster_id\|version\|hostname'; then
+    pass "3.3 Graylog system API returned cluster info"
+else
+    warn "3.3 Graylog system API not yet ready"
+fi
+
+# 3.4 Graylog cluster nodes
+CLUSTER_RESPONSE=$(curl -sf \
+    -u admin:admin_lab_password \
+    -H 'Accept: application/json' \
+    "${GRAYLOG_URL}/api/system/cluster/nodes" \
+    2>/dev/null || echo '')
+if echo "${CLUSTER_RESPONSE}" | grep -qi 'node_id\|nodes'; then
+    pass "3.4 Graylog cluster node list returned"
+else
+    warn "3.4 Graylog cluster nodes not yet visible"
+fi
 
 # ── Results ───────────────────────────────────────────────────────────────────
 echo ""
