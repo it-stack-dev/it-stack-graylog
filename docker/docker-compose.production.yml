@@ -1,12 +1,234 @@
-# Lab 06 — Production: graylog HA-ready with monitoring and external volumes
----
+# =============================================================================
+# IT-Stack: Graylog — Lab 06: Production Deployment
+# Module 20 · Phase 4 · Lab 06
+# =============================================================================
+# Services: MongoDB · Elasticsearch 7 · OpenLDAP · Keycloak · Graylog App
+# Ports:    Web:9050  KC:8564  LDAP:3875  Syslog:1519/udp  GELF:12206/udp
+# Credentials:
+#   Graylog admin: admin / GraylogProd06!
+#   Keycloak: admin / Admin06!
+#   LDAP:     cn=admin,dc=lab,dc=local / LdapProd06!
+# Production features vs Lab 05:
+#   + restart: unless-stopped on ALL services
+#   + Resource limits AND reservations on every service
+#   + GRAYLOG_ROOT_PASSWORD_SHA2 (sha256 of GraylogProd06!)
+#   + IT_STACK_ENV: production  IT_STACK_LAB: "06" labels
+#   + Syslog UDP + GELF UDP inputs active
+# GRAYLOG_ROOT_PASSWORD_SHA2: 0db7a747c6ff62219430654b88e1fe9d474241a65b028a697ecbe2251d01ff18
+# =============================================================================
+
+name: it-stack-graylog-lab06
+
 services:
-  graylog:
-    image: graylog/graylog:5.2
-    container_name: it-stack-graylog
-    restart: always
+
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  graylog-p06-mongo:
+    image: mongo:6.0
+    container_name: graylog-p06-mongo
+    restart: unless-stopped
+    volumes:
+      - graylog-p06-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - graylog-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # ── Elasticsearch 7 ──────────────────────────────────────────────────────────
+  graylog-p06-es:
+    image: elasticsearch:7.17.12
+    container_name: graylog-p06-es
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      xpack.security.enabled: "false"
+      cluster.name: graylog-prod
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - graylog-p06-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - graylog-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # ── OpenLDAP ───────────────────────────────────────────────────────────────
+  graylog-p06-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: graylog-p06-ldap
+    restart: unless-stopped
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Production"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapProd06!
+      LDAP_CONFIG_PASSWORD: ConfigProd06!
+      LDAP_BASE_DN: dc=lab,dc=local
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnlyProd06!
     ports:
-      - "9000:$firstPort"
+      - "3875:389"
+    volumes:
+      - graylog-p06-ldap-data:/var/lib/ldap
+      - graylog-p06-ldap-config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapProd06! cn=admin > /dev/null 2>&1 && echo ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - graylog-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+  # ── Keycloak ───────────────────────────────────────────────────────────────
+  graylog-p06-kc:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: graylog-p06-kc
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin06!
+      KC_HEALTH_ENABLED: "true"
+      KC_DB: dev-file
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8564:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/realms/master || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - graylog-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  # ── Graylog App ───────────────────────────────────────────────────────────
+  graylog-p06-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-p06-app
+    restart: unless-stopped
+    depends_on:
+      graylog-p06-mongo:
+        condition: service_healthy
+      graylog-p06-es:
+        condition: service_healthy
+      graylog-p06-ldap:
+        condition: service_healthy
+      graylog-p06-kc:
+        condition: service_healthy
+    ports:
+      - "9050:9000"
+      - "1519:1514/udp"
+      - "12206:12201/udp"
+    environment:
+      IT_STACK_ENV: production
+      IT_STACK_MODULE: graylog
+      IT_STACK_LAB: "06"
+      GRAYLOG_IS_MASTER: "true"
+      GRAYLOG_PASSWORD_SECRET: GraylogProd06SecretKey1234567890!
+      GRAYLOG_ROOT_PASSWORD_SHA2: 0db7a747c6ff62219430654b88e1fe9d474241a65b028a697ecbe2251d01ff18
+      GRAYLOG_HTTP_EXTERNAL_URI: http://localhost:9050/
+      GRAYLOG_MONGODB_URI: mongodb://graylog-p06-mongo:27017/graylog
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://graylog-p06-es:9200
+      GRAYLOG_LDAP_CONNECTION_URL: ldap://graylog-p06-ldap:389
+      GRAYLOG_LDAP_USER_BASE: dc=lab,dc=local
+      GRAYLOG_LDAP_SYSTEM_USERNAME: cn=admin,dc=lab,dc=local
+      GRAYLOG_LDAP_SYSTEM_PASSWORD: LdapProd06!
+      GRAYLOG_LDAP_ENABLED: "true"
+      GRAYLOG_LDAP_USE_START_TLS: "false"
+      GRAYLOG_LDAP_TRUST_ALL_CERTS: "true"
+      KEYCLOAK_URL: http://graylog-p06-kc:8080
+      KEYCLOAK_REALM: it-stack
+      KEYCLOAK_CLIENT_ID: graylog
+      KEYCLOAK_CLIENT_SECRET: graylog-prod-secret-06
+      ZABBIX_URL: http://zabbix.lab.local:8463
+      ZABBIX_USER: Admin
+      ZABBIX_PASSWORD: ZabbixProd06!
+      GRAYLOG_EMAIL_HOSTNAME: graylog-p06-mail
+      GRAYLOG_EMAIL_PORT: "1025"
+      GRAYLOG_EMAIL_ENABLED: "false"
+      GRAYLOG_ROTATION_STRATEGY: count
+      GRAYLOG_ELASTICSEARCH_MAX_DOCS_PER_INDEX: "20000000"
+      GRAYLOG_ELASTICSEARCH_MAX_NUMBER_OF_INDICES: "5"
+    volumes:
+      - graylog-p06-journal:/usr/share/graylog/data/journal
+    entrypoint: /usr/bin/tini -- wait-for-it graylog-p06-es:9200 -t 120 -- /docker-entrypoint.sh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/lbstatus || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - graylog-p06-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+# ── Networks ───────────────────────────────────────────────────────────────────
+networks:
+  graylog-p06-net:
+    name: graylog-p06-net
+    driver: bridge
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  graylog-p06-mongo-data:
+  graylog-p06-es-data:
+  graylog-p06-ldap-data:
+  graylog-p06-ldap-config:
+  graylog-p06-journal:
     environment:
       - IT_STACK_ENV=production
       - KEYCLOAK_URL=
