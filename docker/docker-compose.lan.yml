@@ -1,36 +1,94 @@
-# Lab 02 — External Dependencies: graylog with external PostgreSQL and Redis
+# Lab 02 — External Dependencies: Graylog with external MongoDB and Elasticsearch
+# Models the LAN tier: data-net (MongoDB + ES) separate from app-net (Graylog).
+# Graylog Web: http://localhost:9010 (admin / admin_lab_password)
+# Syslog UDP:  localhost:1515
+# GELF UDP:    localhost:12202
 ---
-services:
-  graylog:
-    image: graylog/graylog:5.2
-    container_name: it-stack-graylog
-    restart: unless-stopped
-    ports:
-      - "9000:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-02-lan
-      - DB_HOST=
-      - DB_PORT=5432
-      - REDIS_HOST=
-    networks:
-      - it-stack-net
+name: it-stack-graylog-lab02
 
-  # Lightweight local DB for lab (replace with lab-db1 in real env)
-  postgres:
-    image: postgres:16
-    container_name: it-stack-graylog-db
-    environment:
-      POSTGRES_DB: graylog_db
-      POSTGRES_USER: graylog_user
-      POSTGRES_PASSWORD: graylog_pass
+services:
+
+  # ── External MongoDB (simulates lab-db1 MongoDB) ───────────────────────────
+  graylog-l02-mongo:
+    image: mongo:6.0
+    container_name: graylog-l02-mongo
+    restart: unless-stopped
     volumes:
-      - graylog_pg_data:/var/lib/postgresql/data
+      - graylog-l02-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
-      - it-stack-net
+      - graylog-l02-data-net
+
+  # ── External Elasticsearch (simulates lab-db1 ES cluster) ─────────────────
+  graylog-l02-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.12
+    container_name: graylog-l02-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=graylog-lab02
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - graylog-l02-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q 'green\\|yellow' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 90s
+    networks:
+      - graylog-l02-data-net
+
+  # ── Graylog application ────────────────────────────────────────────────────
+  graylog-l02-app:
+    image: graylog/graylog:5.2
+    container_name: graylog-l02-app
+    restart: unless-stopped
+    depends_on:
+      graylog-l02-mongo:
+        condition: service_healthy
+      graylog-l02-es:
+        condition: service_healthy
+    environment:
+      GRAYLOG_PASSWORD_SECRET: "labsecretkey1234labsecretkey1234"
+      GRAYLOG_ROOT_PASSWORD_SHA2: "5e6d6e9c2d9d72e9f5a20b97e0a47f9de8df4c3f1e2b3c4d5e6f7a8b9c0d1e2f"
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://localhost:9010/"
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://graylog-l02-es:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://graylog-l02-mongo/graylog"
+      GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
+    ports:
+      - "9010:9000"
+      - "1515:1514/udp"
+      - "12202:12201/udp"
+    volumes:
+      - graylog-l02-data:/usr/share/graylog/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/ | grep -qi 'cluster_id\\|version' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    networks:
+      - graylog-l02-data-net
+      - graylog-l02-app-net
 
 networks:
-  it-stack-net:
+  graylog-l02-data-net:
+    driver: bridge
+  graylog-l02-app-net:
     driver: bridge
 
 volumes:
-  graylog_pg_data:
+  graylog-l02-mongo-data:
+  graylog-l02-es-data:
+  graylog-l02-data:
