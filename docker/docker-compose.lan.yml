@@ -41,7 +41,7 @@ services:
     volumes:
       - graylog-l02-es-data:/usr/share/elasticsearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE 'green\|yellow' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE 'green|yellow' || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 8
@@ -73,7 +73,7 @@ services:
     volumes:
       - graylog-l02-data:/usr/share/graylog/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/ | grep -qi 'cluster_id\\|version' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/ | grep -qi 'cluster_id\|version' || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 10
